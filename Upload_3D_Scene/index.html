@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>3D Viewer (OBJ / GLB)</title>
+<title>3D Viewer (OBJ / STL / GLB)</title>
 <style>
   body { margin: 0; overflow: hidden; background: #222; font-family: sans-serif; }
   #hint { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
@@ -83,6 +83,8 @@
 <script>if(!(window.THREE&&THREE.OBJLoader)){document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"><\/script>');}</script>
 <script src="https://unpkg.com/three@0.128.0/examples/js/loaders/MTLLoader.js"></script>
 <script>if(!(window.THREE&&THREE.MTLLoader)){document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/MTLLoader.js"><\/script>');}</script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
+<script>if(!(window.THREE&&THREE.STLLoader)){document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"><\/script>');}</script>
 
 <script>
 (function () {
@@ -95,24 +97,24 @@ function show(m) { elBanner.style.display = 'block'; elBanner.textContent += m +
 var I18N = {
   ru: {
     open: 'Открыть файлы', ortho: 'Орто', persp: 'Перспектива', grid: 'Сетка',
-    free: 'Свободно', split: 'Разбить',
+    free: 'Свободное вращение', split: 'Разбить',
     save: 'Сохранить', saved: 'Скачано!', empty: 'Модель не загружена',
     noPolys: 'В файле нет полигонов', opacity: 'Прозр.', gloss: 'Глянец', light: 'Свет',
     shell: 'Оболочка', visibility: 'Показать/скрыть', loadError: 'Ошибка загрузки',
     needModel: 'Сначала загрузите модель', saveAs: 'Имя файла для сохранения:',
-    hint: 'Перетащите .obj (с .mtl и текстурами) или .glb,<br>либо нажмите «Открыть файлы»',
+    hint: 'Перетащите .obj (с .mtl), .stl или .glb,<br>либо нажмите «Открыть файлы»',
     libWait: 'Ждём библиотеку three.js…',
     libFail: 'Библиотека three.js не загрузилась за 60 секунд. Проверьте интернет и обновите страницу (Ctrl+F5).',
     notReady: 'Библиотека 3D ещё не загрузилась. Подождите пару секунд и попробуйте снова.'
   },
   en: {
     open: 'Open files', ortho: 'Ortho', persp: 'Perspective', grid: 'Grid',
-    free: 'Free', split: 'Split',
+    free: 'Free rotation', split: 'Split',
     save: 'Save', saved: 'Saved!', empty: 'No model loaded',
     noPolys: 'No polygons in file', opacity: 'Alpha', gloss: 'Gloss', light: 'Light',
     shell: 'Shell', visibility: 'Show/hide', loadError: 'Load error',
     needModel: 'Load a model first', saveAs: 'File name for saving:',
-    hint: 'Drag a .obj (with .mtl and textures) or .glb here,<br>or press "Open files"',
+    hint: 'Drag a .obj (with .mtl), .stl or .glb here,<br>or press "Open files"',
     libWait: 'Waiting for three.js library…',
     libFail: 'three.js did not load within 60 seconds. Check connection and refresh (Ctrl+F5).',
     notReady: '3D library is not loaded yet. Wait a couple of seconds and try again.'
@@ -158,7 +160,7 @@ document.getElementById('btnLang').onclick = function () { lang = (lang === 'ru'
 // ---------- Файловый ввод ----------
 var input = document.createElement('input');
 input.type = 'file'; input.multiple = true;
-input.accept = '.obj,.mtl,.glb,.gltf,.bin,.png,.jpg,.jpeg';
+input.accept = '.obj,.mtl,.stl,.glb,.gltf,.bin,.png,.jpg,.jpeg';
 input.onchange = function () {
   if (input.files.length) load([].slice.call(input.files));
   input.value = '';
@@ -522,14 +524,15 @@ function buildShellList(root) {
 function load(files) {
   loadedFiles = files;
   var map = new Map(files.map(function (f) { return [f.name, URL.createObjectURL(f)]; }));
-  var objFile = null, mtlFile = null, gltfFile = null;
+  var objFile = null, mtlFile = null, gltfFile = null, stlFile = null;
   files.forEach(function (f) {
     var n = f.name.toLowerCase();
     if (!objFile && /\.obj$/.test(n)) objFile = f;
     if (!mtlFile && /\.mtl$/.test(n)) mtlFile = f;
     if (!gltfFile && /\.(glb|gltf)$/.test(n)) gltfFile = f;
+    if (!stlFile && /\.stl$/.test(n)) stlFile = f;
   });
-  if (!objFile && !gltfFile) return;
+  if (!objFile && !gltfFile && !stlFile) return;
 
   if (current) { scene.remove(current); current = null; }
   document.getElementById('hint').style.display = 'none';
@@ -554,6 +557,15 @@ function load(files) {
 
   if (gltfFile) {
     new THREE.GLTFLoader(manager).load(map.get(gltfFile.name), function (g) { proceed(g.scene); }, undefined, fail);
+  } else if (stlFile) {
+    new THREE.STLLoader(manager).load(map.get(stlFile.name), function (geo) {
+      var mat = new THREE.MeshPhongMaterial({ color: 0xcccccc, side: THREE.DoubleSide });
+      var mesh = new THREE.Mesh(geo, mat);
+      mesh.name = stlFile.name.replace(/\.stl$/i, '');
+      var group = new THREE.Group();
+      group.add(mesh);
+      proceed(group);
+    }, undefined, fail);
   } else {
     var loader = new THREE.OBJLoader(manager);
     var start = function () {
@@ -582,7 +594,7 @@ function fileToDataURL(file) {
 function defaultSaveName() {
   var f = null;
   loadedFiles.forEach(function (x) {
-    if (!f && /\.(obj|glb|gltf)$/i.test(x.name)) f = x;
+    if (!f && /\.(obj|stl|glb|gltf)$/i.test(x.name)) f = x;
   });
   var base = f ? f.name.replace(/\.[^.]+$/, '') : 'model';
   base = base.replace(/[\\\/:*?"<>|]/g, '_');
@@ -653,6 +665,8 @@ function buildStandaloneHTML(snap) {
 <script>if(!(window.THREE&&THREE.OBJLoader))document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"><\\/script>');<\/script>
 <script src="https://unpkg.com/three@0.128.0/examples/js/loaders/MTLLoader.js"><\/script>
 <script>if(!(window.THREE&&THREE.MTLLoader))document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/MTLLoader.js"><\\/script>');<\/script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/loaders/STLLoader.js"><\/script>
+<script>if(!(window.THREE&&THREE.STLLoader))document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"><\\/script>');<\/script>
 <script type="application/json" id="snapshot">${data}<\/script>
 <script>
 (function () {
@@ -669,7 +683,7 @@ function buildStandaloneHTML(snap) {
       var M = {
         title: ["Оболочки", "Shells"],
         savedAt: ["Сохранено: ", "Saved: "],
-        hint: ["Вращение — палец/мышь. «Свободно» — крутится сама модель без ограничений.",
+        hint: ["Вращение — палец/мышь. «Свободное вращение» — крутится сама модель без ограничений.",
                "Rotate — finger/mouse. 'Free' — the model itself spins without limits."],
         loadError: ["Ошибка загрузки", "Load error"],
         shell: ["Оболочка", "Shell"],
@@ -677,7 +691,7 @@ function buildStandaloneHTML(snap) {
         opacity: ["Прозр.", "Alpha"],
         gloss: ["Глянец", "Gloss"],
         light: ["Свет", "Light"],
-        free: ["Свободно", "Free"],
+        free: ["Свободное вращение", "Free rotation"],
         noPolys: ["В файле нет полигонов", "No polygons in file"]
       };
       var L = S.lang === "en" ? 1 : 0;
@@ -1032,12 +1046,13 @@ function buildStandaloneHTML(snap) {
       }
 
       var files = S.files || {};
-      var gltfName = null, objName = null, mtlName = null;
+      var gltfName = null, objName = null, mtlName = null, stlName = null;
       Object.keys(files).forEach(function (n) {
         var low = n.toLowerCase();
         if (!gltfName && /\\.(glb|gltf)$/.test(low)) gltfName = n;
         if (!objName && /\\.obj$/.test(low)) objName = n;
         if (!mtlName && /\\.mtl$/.test(low)) mtlName = n;
+        if (!stlName && /\\.stl$/.test(low)) stlName = n;
       });
       function basename(u) { return decodeURIComponent(String(u).split("?")[0].split("/").pop()); }
       function fail(e) { alert(t("loadError") + ": " + (e && e.message ? e.message : e)); }
@@ -1057,6 +1072,15 @@ function buildStandaloneHTML(snap) {
 
       if (gltfName) {
         new THREE.GLTFLoader().load(files[gltfName], function (g) { proceed(g.scene); }, undefined, fail);
+      } else if (stlName) {
+        new THREE.STLLoader().load(files[stlName], function (geo) {
+          var mat = new THREE.MeshPhongMaterial({ color: 0xcccccc, side: THREE.DoubleSide });
+          var mesh = new THREE.Mesh(geo, mat);
+          mesh.name = stlName.replace(/\\.stl$/i, "");
+          var group = new THREE.Group();
+          group.add(mesh);
+          proceed(group);
+        }, undefined, fail);
       } else if (objName) {
         var manager = new THREE.LoadingManager();
         manager.setURLModifier(function (u) { var n = basename(u); return files[n] || u; });
