@@ -1,0 +1,1249 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3D Viewer (OBJ / GLB)</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #222; font-family: sans-serif; }
+  #hint { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: #aaa; font-size: 18px; pointer-events: none; text-align: center; }
+  canvas { display: block; }
+  #panel { position: fixed; top: 0; right: 0; width: 300px; max-width: 90vw; max-height: 100vh;
+    background: rgba(30,30,30,.92); color: #ddd; font-size: 13px;
+    border-left: 1px solid #444; display: flex; flex-direction: column; }
+  #bar { padding: 8px; display: flex; gap: 6px; border-bottom: 1px solid #444; flex-wrap: wrap; align-items: center; }
+  #bar button { background: #3a3a3a; color: #eee; border: 1px solid #555; border-radius: 4px;
+    padding: 5px 8px; cursor: pointer; font-size: 12px; }
+  #bar button:hover { background: #4a4a4a; }
+  #bar button.off { opacity: .45; }
+  #bar button.active { background: #3f6b3f; border-color: #6c6; }
+  #brightCtl { display: flex; align-items: center; gap: 4px; font-size: 12px; color: #ccc; width: 100%; }
+  #brightCtl input[type=range] { flex: 1; }
+  #list { overflow-y: auto; padding: 6px 8px; flex: 1; }
+  .shell { border-bottom: 1px solid #3a3a3a; padding: 6px 0; }
+  .shell-head { display: flex; align-items: center; gap: 6px; }
+  .shell-head .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shell-head input[type=color] { width: 26px; height: 22px; padding: 0; border: none; background: none; }
+  .shell-head .vis { cursor: pointer; }
+  .shell-body { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+  .shell-body label { color: #999; white-space: nowrap; width: 52px; }
+  .shell-body input[type=range] { flex: 1; }
+  .shell-body .val { width: 34px; text-align: right; color: #aaa; }
+  #empty { color: #888; text-align: center; padding: 12px 4px; }
+  #errBanner { position: fixed; left: 10px; bottom: 10px; max-width: 70vw;
+    background: #a33; color: #fff; padding: 8px 12px; border-radius: 6px;
+    font: 12px monospace; display: none; white-space: pre-wrap; z-index: 10; }
+</style>
+</head>
+<body>
+<div id="hint"></div>
+<div id="errBanner"></div>
+<div id="panel">
+  <div id="bar">
+    <button id="btnOpen">📂 <span data-i18n="open"></span></button>
+    <button id="btnCam"><span id="camLabel"></span></button>
+    <button id="btnFree">✥ <span data-i18n="free"></span></button>
+    <button id="btnSplit" class="off">✂ <span data-i18n="split"></span></button>
+    <button id="btnGrid">▦ <span data-i18n="grid"></span></button>
+    <button id="btnSave" class="off">📦 <span data-i18n="save"></span></button>
+    <button id="btnLang">🇷🇺</button>
+    <div id="brightCtl">
+      <span data-i18n="light"></span>
+      <input type="range" id="bright" min="0" max="1" step="0.01" value="0.6">
+    </div>
+  </div>
+  <div id="list"><div id="empty"></div></div>
+</div>
+
+<script>
+  (function () {
+    var el = document.getElementById('errBanner');
+    function show(msg) { el.style.display = 'block'; el.textContent += msg + '\n'; }
+    window.addEventListener('error', function (e) {
+      show('Error: ' + (e.message || e) + ' (line ' + (e.lineno || '?') + ')');
+    });
+    window.addEventListener('unhandledrejection', function (e) {
+      var r = e.reason;
+      show('Promise error: ' + (r && r.message ? r.message : r));
+    });
+  })();
+</script>
+
+<!-- Порядок CDN: unpkg → jsdelivr → cdnjs -->
+<script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+<script>if(!window.THREE){document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"><\/script>');}</script>
+<script>if(!window.THREE){document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"><\/script>');}</script>
+
+<script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>if(!(window.THREE&&THREE.OrbitControls)){document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"><\/script>');}</script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script>if(!(window.THREE&&THREE.GLTFLoader)){document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"><\/script>');}</script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
+<script>if(!(window.THREE&&THREE.OBJLoader)){document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"><\/script>');}</script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/loaders/MTLLoader.js"></script>
+<script>if(!(window.THREE&&THREE.MTLLoader)){document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/MTLLoader.js"><\/script>');}</script>
+
+<script>
+(function () {
+'use strict';
+
+// ---------- Ошибки и готовность библиотеки ----------
+var elBanner = document.getElementById('errBanner');
+function show(m) { elBanner.style.display = 'block'; elBanner.textContent += m + '\n'; }
+
+var I18N = {
+  ru: {
+    open: 'Открыть файлы', ortho: 'Орто', persp: 'Перспектива', grid: 'Сетка',
+    free: 'Свободно', split: 'Разбить',
+    save: 'Сохранить', saved: 'Скачано!', empty: 'Модель не загружена',
+    noPolys: 'В файле нет полигонов', opacity: 'Прозр.', gloss: 'Глянец', light: 'Свет',
+    shell: 'Оболочка', visibility: 'Показать/скрыть', loadError: 'Ошибка загрузки',
+    needModel: 'Сначала загрузите модель', saveAs: 'Имя файла для сохранения:',
+    hint: 'Перетащите .obj (с .mtl и текстурами) или .glb,<br>либо нажмите «Открыть файлы»',
+    libWait: 'Ждём библиотеку three.js…',
+    libFail: 'Библиотека three.js не загрузилась за 60 секунд. Проверьте интернет и обновите страницу (Ctrl+F5).',
+    notReady: 'Библиотека 3D ещё не загрузилась. Подождите пару секунд и попробуйте снова.'
+  },
+  en: {
+    open: 'Open files', ortho: 'Ortho', persp: 'Perspective', grid: 'Grid',
+    free: 'Free', split: 'Split',
+    save: 'Save', saved: 'Saved!', empty: 'No model loaded',
+    noPolys: 'No polygons in file', opacity: 'Alpha', gloss: 'Gloss', light: 'Light',
+    shell: 'Shell', visibility: 'Show/hide', loadError: 'Load error',
+    needModel: 'Load a model first', saveAs: 'File name for saving:',
+    hint: 'Drag a .obj (with .mtl and textures) or .glb here,<br>or press "Open files"',
+    libWait: 'Waiting for three.js library…',
+    libFail: 'three.js did not load within 60 seconds. Check connection and refresh (Ctrl+F5).',
+    notReady: '3D library is not loaded yet. Wait a couple of seconds and try again.'
+  }
+};
+var lang = 'ru';
+function t(k) { return I18N[lang][k]; }
+
+var ready = false;
+var libMsg = '';
+function libReady() { return !!(window.THREE && window.THREE.OrbitControls); }
+
+// ---------- Состояние (сцена создаётся в init) ----------
+var scene = null, camera = null, renderer = null, controls = null, grid = null;
+var hemiLight = null, dirLight = null;
+var FOV = 50, isOrtho = false;
+var current = null, loadedFiles = [], shellCount = 0;
+var islandSplit = false;
+var freeRot = false, dragging = false, lastX = 0, lastY = 0;
+var modelCenter = null;
+
+// ---------- Яркость освещения ----------
+var brightness = 0.6;
+function applyBrightness(v) {
+  brightness = v;
+  if (hemiLight) hemiLight.intensity = 0.15 + v * 3.0;
+  if (dirLight) dirLight.intensity = 0.1 + v * 4.0;
+}
+document.getElementById('bright').oninput = function () { applyBrightness(parseFloat(this.value)); };
+
+// ---------- Язык ----------
+function applyLang() {
+  document.querySelectorAll('[data-i18n]').forEach(function (el) { el.textContent = t(el.dataset.i18n); });
+  document.getElementById('camLabel').textContent = isOrtho ? t('persp') : t('ortho');
+  document.getElementById('btnLang').textContent = (lang === 'ru') ? '🇷🇺' : '🇬🇧';
+  document.getElementById('hint').innerHTML = t('hint');
+  var empty = document.getElementById('list').querySelector('#empty');
+  if (empty) empty.textContent = current ? t('noPolys') : t('empty');
+  document.documentElement.lang = lang;
+}
+document.getElementById('btnLang').onclick = function () { lang = (lang === 'ru') ? 'en' : 'ru'; applyLang(); };
+
+// ---------- Файловый ввод ----------
+var input = document.createElement('input');
+input.type = 'file'; input.multiple = true;
+input.accept = '.obj,.mtl,.glb,.gltf,.bin,.png,.jpg,.jpeg';
+input.onchange = function () {
+  if (input.files.length) load([].slice.call(input.files));
+  input.value = '';
+};
+
+// ---------- Кнопки: привязываются сразу, без ожидания библиотеки ----------
+document.getElementById('btnOpen').onclick = function () {
+  if (!ready) { alert(libMsg || t('notReady')); return; }
+  input.click();
+};
+document.getElementById('btnCam').onclick = function () {
+  if (!ready) { alert(libMsg || t('notReady')); return; }
+  switchCamera();
+};
+var btnGrid = document.getElementById('btnGrid');
+btnGrid.onclick = function () {
+  if (!ready) { alert(libMsg || t('notReady')); return; }
+  grid.visible = !grid.visible;
+  btnGrid.classList.toggle('off', !grid.visible);
+};
+var btnSplit = document.getElementById('btnSplit');
+btnSplit.onclick = function () {
+  if (!ready) { alert(libMsg || t('notReady')); return; }
+  if (!current) return;
+  splitAllIslands(current);
+  islandSplit = true;
+  buildShellList(current);
+};
+document.getElementById('btnSave').onclick = function () {
+  if (!ready) { alert(libMsg || t('notReady')); return; }
+  doSave();
+};
+
+// ---------- Свободное вращение модели ----------
+var btnFree = document.getElementById('btnFree');
+function setFreeMode(on) {
+  freeRot = on;
+  if (controls) controls.enableRotate = !on;
+  btnFree.classList.toggle('active', on);
+}
+btnFree.onclick = function () {
+  if (!ready) { alert(libMsg || t('notReady')); return; }
+  setFreeMode(!freeRot);
+};
+
+function rotateObject(dx, dy) {
+  if (!current || !modelCenter || !camera) return;
+  var speed = 0.008;
+  var right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+  var up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+  var qy = new THREE.Quaternion().setFromAxisAngle(right, dy * speed);
+  var qx = new THREE.Quaternion().setFromAxisAngle(up, dx * speed);
+  var q = new THREE.Quaternion().multiplyQuaternions(qy, qx);
+  current.position.sub(modelCenter).applyQuaternion(q).add(modelCenter);
+  current.quaternion.premultiply(q);
+}
+window.addEventListener('pointermove', function (e) {
+  if (!dragging) return;
+  var dx = e.clientX - lastX, dy = e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  rotateObject(dx, dy);
+});
+window.addEventListener('pointerup', function () { dragging = false; });
+
+// ---------- Перетаскивание файлов ----------
+addEventListener('dragover', function (e) { e.preventDefault(); });
+addEventListener('drop', function (e) {
+  e.preventDefault();
+  if (!ready) { alert(libMsg || t('notReady')); return; }
+  if (e.dataTransfer.files.length) load([].slice.call(e.dataTransfer.files));
+});
+addEventListener('resize', onResize);
+
+// ---------- Перспектива / ортографика ----------
+function switchCamera() {
+  var pos = camera.position.clone();
+  var target = controls.target.clone();
+  if (!isOrtho) {
+    var dist = pos.distanceTo(target);
+    var halfH = Math.tan(THREE.MathUtils.degToRad(FOV / 2)) * dist;
+    var o = new THREE.OrthographicCamera(
+      -halfH * (innerWidth / innerHeight), halfH * (innerWidth / innerHeight),
+      halfH, -halfH, 0.01, 10000);
+    o.position.copy(pos); o.lookAt(target);
+    camera = o; isOrtho = true;
+  } else {
+    var p = new THREE.PerspectiveCamera(FOV, innerWidth / innerHeight, 0.01, 5000);
+    p.position.copy(pos); p.lookAt(target);
+    camera = p; isOrtho = false;
+  }
+  controls.object = camera;
+  controls.update();
+  document.getElementById('camLabel').textContent = isOrtho ? t('persp') : t('ortho');
+}
+
+// ---------- Глянец / матовость ----------
+function getGloss(m) {
+  if (!m) return 0.5;
+  if (m.roughness !== undefined) return 1 - m.roughness;
+  if (m.shininess !== undefined) return Math.min(1, (m.shininess || 30) / 128);
+  return 0.5;
+}
+function applyGloss(mesh, v) {
+  var mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  var out = mats.map(function (m) {
+    if (!m) return m;
+    if (m.isMeshStandardMaterial) { m.roughness = 1 - v; m.needsUpdate = true; return m; }
+    if (m.isMeshPhongMaterial) {
+      m.shininess = 1 + v * 127;
+      if (m.specular) m.specular.setScalar(v * 0.9);
+      m.needsUpdate = true;
+      return m;
+    }
+    var ph = new THREE.MeshPhongMaterial({
+      color: m.color ? m.color.clone() : new THREE.Color(0xcccccc),
+      map: m.map || null, transparent: m.transparent, opacity: m.opacity,
+      side: (m.side !== undefined) ? m.side : THREE.FrontSide
+    });
+    ph.shininess = 1 + v * 127;
+    ph.specular.setScalar(v * 0.9);
+    return ph;
+  });
+  mesh.material = Array.isArray(mesh.material) ? out : out[0];
+}
+
+// ---------- Разрезание мешей ----------
+var MAX_TRIANGLES = 2000000;
+
+function unionComponents(geo) {
+  var pos = geo.attributes.position;
+  if (!pos) return null;
+  var index = geo.index;
+  var triCount = index ? Math.floor(index.count / 3) : Math.floor(pos.count / 3);
+  if (triCount < 2) return null;
+
+  var vid = null, nv;
+  if (index) {
+    nv = pos.count;
+  } else {
+    var map = new Map();
+    vid = new Int32Array(pos.count);
+    for (var i = 0; i < pos.count; i++) {
+      var key = pos.getX(i).toFixed(5) + ',' + pos.getY(i).toFixed(5) + ',' + pos.getZ(i).toFixed(5);
+      var id = map.get(key);
+      if (id === undefined) { id = map.size; map.set(key, id); }
+      vid[i] = id;
+    }
+    nv = map.size;
+  }
+
+  var parent = new Int32Array(nv);
+  for (var s = 0; s < nv; s++) parent[s] = s;
+  function find(x) {
+    while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+  }
+  function vi(i) { return index ? index.array[i] : vid[i]; }
+
+  for (var t = 0; t < triCount; t++) {
+    var a = find(vi(t * 3));
+    var b = find(vi(t * 3 + 1));
+    var c = find(vi(t * 3 + 2));
+    if (a !== b) parent[a] = b;
+    if (a !== c) parent[a] = c;
+  }
+
+  var groups = new Map();
+  for (var t2 = 0; t2 < triCount; t2++) {
+    var r = find(vi(t2 * 3));
+    var arr = groups.get(r);
+    if (!arr) { arr = []; groups.set(r, arr); }
+    arr.push(t2);
+  }
+  if (groups.size < 2) return null;
+  return Array.from(groups.values());
+}
+
+function splitByMaterialGroups(mesh) {
+  var geo = mesh.geometry;
+  var mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  if (!geo || !geo.groups || geo.groups.length < 2 || mats.length < 2) return;
+  var parent = mesh.parent;
+  if (!parent) return;
+  var created = [];
+  geo.groups.forEach(function (g) {
+    var mi = (g.materialIndex !== undefined) ? g.materialIndex : 0;
+    var m = mats[mi];
+    if (!m || g.count === 0) return;
+    var sub = new THREE.BufferGeometry();
+    if (geo.index) {
+      for (var an in geo.attributes) sub.setAttribute(an, geo.attributes[an]);
+      var idx = geo.index.array.slice(g.start, g.start + g.count);
+      sub.setIndex(new THREE.BufferAttribute(idx, 1));
+    } else {
+      for (var an2 in geo.attributes) {
+        var a = geo.attributes[an2];
+        sub.setAttribute(an2, new THREE.BufferAttribute(
+          a.array.slice(g.start * a.itemSize, (g.start + g.count) * a.itemSize), a.itemSize));
+      }
+    }
+    var nm = new THREE.Mesh(sub, m.clone());
+    nm.position.copy(mesh.position);
+    nm.rotation.copy(mesh.rotation);
+    nm.scale.copy(mesh.scale);
+    nm.name = (mesh.name && mesh.name.trim()) ? mesh.name + '_' + (created.length + 1) : '';
+    created.push(nm);
+  });
+  if (created.length > 1) {
+    created.forEach(function (c) { parent.add(c); });
+    parent.remove(mesh);
+  }
+}
+
+function splitByIslands(mesh) {
+  var geo = mesh.geometry;
+  if (!geo || !geo.attributes.position) return;
+  var index = geo.index;
+  var triCount = index ? Math.floor(index.count / 3)
+                       : Math.floor(geo.attributes.position.count / 3);
+  if (triCount < 2 || triCount > MAX_TRIANGLES) return;
+  var comps = unionComponents(geo);
+  if (!comps || comps.length < 2) return;
+  var parent = mesh.parent;
+  if (!parent) return;
+  var created = [];
+  comps.forEach(function (tris, k) {
+    var sub = new THREE.BufferGeometry();
+    for (var an in geo.attributes) sub.setAttribute(an, geo.attributes[an]);
+    var idx = new Uint32Array(tris.length * 3);
+    for (var i = 0; i < tris.length; i++) {
+      for (var j = 0; j < 3; j++) {
+        idx[i * 3 + j] = index ? index.array[tris[i] * 3 + j] : tris[i] * 3 + j;
+      }
+    }
+    sub.setIndex(new THREE.BufferAttribute(idx, 1));
+    var mats = Array.isArray(mesh.material)
+      ? mesh.material.map(function (m) { return m ? m.clone() : new THREE.MeshPhongMaterial(); })
+      : mesh.material.clone();
+    var nm = new THREE.Mesh(sub, mats);
+    nm.position.copy(mesh.position);
+    nm.rotation.copy(mesh.rotation);
+    nm.scale.copy(mesh.scale);
+    nm.name = (mesh.name && mesh.name.trim()) ? mesh.name + '_' + (k + 1) : '';
+    created.push(nm);
+  });
+  created.forEach(function (c) { parent.add(c); });
+  parent.remove(mesh);
+}
+
+function splitAllMaterial(root) {
+  var meshes = [];
+  root.traverse(function (o) { if (o.isMesh) meshes.push(o); });
+  meshes.forEach(splitByMaterialGroups);
+}
+function splitAllIslands(root) {
+  var meshes = [];
+  root.traverse(function (o) { if (o.isMesh) meshes.push(o); });
+  meshes.forEach(splitByIslands);
+}
+
+// ---------- Оболочки ----------
+function ensureUniqueMaterial(mesh) {
+  if (Array.isArray(mesh.material)) {
+    mesh.material = mesh.material.map(function (m) { return m ? m.clone() : new THREE.MeshPhongMaterial(); });
+  } else if (mesh.material) {
+    mesh.material = mesh.material.clone();
+  } else {
+    mesh.material = new THREE.MeshPhongMaterial({ color: 0xcccccc });
+  }
+}
+
+function frame(object) {
+  var box = new THREE.Box3().setFromObject(object);
+  if (box.isEmpty()) return;
+  var center = box.getCenter(new THREE.Vector3());
+  modelCenter.copy(center);
+  var size = box.getSize(new THREE.Vector3());
+  var maxDim = Math.max(size.x, size.y, size.z) || 1;
+  camera.position.copy(center).add(new THREE.Vector3(maxDim * 1.5, maxDim * 1.2, maxDim * 1.5));
+  if (isOrtho) {
+    var dist = camera.position.distanceTo(center);
+    var halfH = Math.tan(THREE.MathUtils.degToRad(FOV / 2)) * dist;
+    camera.left = -halfH * (innerWidth / innerHeight);
+    camera.right = halfH * (innerWidth / innerHeight);
+    camera.top = halfH; camera.bottom = -halfH;
+    camera.zoom = 1;
+  }
+  camera.updateProjectionMatrix();
+  controls.target.copy(center);
+  controls.update();
+}
+
+function addShellRow(mesh, name) {
+  var mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+  var main = mats[0];
+  var startColor = '#' + (main && main.color ? main.color.getHexString() : 'cccccc');
+  var startOpacity = (main && main.transparent) ? main.opacity : 1;
+  var startGloss = getGloss(main);
+  var row = document.createElement('div');
+  row.className = 'shell';
+  row.innerHTML =
+    '<div class="shell-head">' +
+      '<span class="vis" title="' + t('visibility') + '">👁</span>' +
+      '<span class="name" title="' + name + '">' + name + '</span>' +
+      '<input type="color" value="' + startColor + '">' +
+    '</div>' +
+    '<div class="shell-body">' +
+      '<label>' + t('opacity') + '</label>' +
+      '<input type="range" min="0" max="1" step="0.01" value="' + startOpacity + '">' +
+      '<span class="val">' + Math.round(startOpacity * 100) + '%</span>' +
+    '</div>' +
+    '<div class="shell-body">' +
+      '<label>' + t('gloss') + '</label>' +
+      '<input type="range" min="0" max="1" step="0.01" value="' + startGloss + '">' +
+      '<span class="val">' + Math.round(startGloss * 100) + '%</span>' +
+    '</div>';
+  var visEl = row.querySelector('.vis');
+  var colorEl = row.querySelector('input[type=color]');
+  var sliders = row.querySelectorAll('input[type=range]');
+  var vals = row.querySelectorAll('.val');
+  visEl.onclick = function () {
+    mesh.visible = !mesh.visible;
+    visEl.style.opacity = mesh.visible ? 1 : .35;
+  };
+  colorEl.oninput = function () {
+    mesh.userData.cTouched = true;
+    mats.forEach(function (m) { m.color.set(colorEl.value); m.map = null; m.needsUpdate = true; });
+  };
+  sliders[0].oninput = function () {
+    var v = parseFloat(sliders[0].value);
+    vals[0].textContent = Math.round(v * 100) + '%';
+    mesh.userData.oTouched = true;
+    mats.forEach(function (m) {
+      m.opacity = v; m.transparent = v < 1;
+      m.depthWrite = v >= 1; m.needsUpdate = true;
+    });
+  };
+  sliders[1].oninput = function () {
+    var v = parseFloat(sliders[1].value);
+    vals[1].textContent = Math.round(v * 100) + '%';
+    mesh.userData.gTouched = true;
+    applyGloss(mesh, v);
+  };
+  document.getElementById('list').appendChild(row);
+}
+
+function buildShellList(root) {
+  var list = document.getElementById('list');
+  list.innerHTML = '';
+  shellCount = 0;
+  root.traverse(function (o) {
+    if (!o.isMesh) return;
+    shellCount++;
+    ensureUniqueMaterial(o);
+    addShellRow(o, (o.name && o.name.trim()) ? o.name : t('shell') + ' ' + shellCount);
+  });
+  if (!shellCount) list.innerHTML = '<div id="empty">' + t('noPolys') + '</div>';
+}
+
+// ---------- Загрузка модели ----------
+function load(files) {
+  loadedFiles = files;
+  var map = new Map(files.map(function (f) { return [f.name, URL.createObjectURL(f)]; }));
+  var objFile = null, mtlFile = null, gltfFile = null;
+  files.forEach(function (f) {
+    var n = f.name.toLowerCase();
+    if (!objFile && /\.obj$/.test(n)) objFile = f;
+    if (!mtlFile && /\.mtl$/.test(n)) mtlFile = f;
+    if (!gltfFile && /\.(glb|gltf)$/.test(n)) gltfFile = f;
+  });
+  if (!objFile && !gltfFile) return;
+
+  if (current) { scene.remove(current); current = null; }
+  document.getElementById('hint').style.display = 'none';
+
+  var manager = new THREE.LoadingManager();
+  manager.setURLModifier(function (url) {
+    var name = decodeURIComponent(String(url).split('?')[0].split(/[\\\/]/).pop());
+    return map.get(name) || url;
+  });
+
+  var proceed = function (object) {
+    splitAllMaterial(object);
+    islandSplit = false;
+    scene.add(object);
+    current = object;
+    frame(object);
+    buildShellList(object);
+    btnSplit.classList.remove('off');
+    document.getElementById('btnSave').classList.remove('off');
+  };
+  var fail = function (e) { alert(t('loadError') + ': ' + (e && e.message ? e.message : e)); };
+
+  if (gltfFile) {
+    new THREE.GLTFLoader(manager).load(map.get(gltfFile.name), function (g) { proceed(g.scene); }, undefined, fail);
+  } else {
+    var loader = new THREE.OBJLoader(manager);
+    var start = function () {
+      loader.load(map.get(objFile.name), proceed, undefined, fail);
+    };
+    if (mtlFile) {
+      new THREE.MTLLoader(manager).load(map.get(mtlFile.name), function (mats) {
+        mats.preload();
+        loader.setMaterials(mats);
+        start();
+      }, undefined, function () { start(); });
+    } else { start(); }
+  }
+}
+
+// ---------- Сохранение HTML со встроенной моделью ----------
+function fileToDataURL(file) {
+  return new Promise(function (res, rej) {
+    var r = new FileReader();
+    r.onload = function () { res(r.result); };
+    r.onerror = function () { rej(r.error); };
+    r.readAsDataURL(file);
+  });
+}
+
+function defaultSaveName() {
+  var f = null;
+  loadedFiles.forEach(function (x) {
+    if (!f && /\.(obj|glb|gltf)$/i.test(x.name)) f = x;
+  });
+  var base = f ? f.name.replace(/\.[^.]+$/, '') : 'model';
+  base = base.replace(/[\\\/:*?"<>|]/g, '_');
+  var d = new Date();
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  return base + '_' + d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + '.html';
+}
+
+function escHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
+function buildStandaloneHTML(snap) {
+  var data = JSON.stringify(snap).replace(/</g, '\\u003c');
+  var title = escHtml(snap.title || '3D Model');
+  return `<!DOCTYPE html>
+<html lang="${snap.lang}">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title}</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #222; font-family: sans-serif; }
+  #badge { position: fixed; top: 10px; left: 10px; color: #ccc; font-size: 12px;
+    background: rgba(30,30,30,.7); padding: 6px 10px; border-radius: 6px; white-space: pre-line; z-index: 5; }
+  canvas { display: block; }
+  #panel { position: fixed; top: 0; right: 0; width: 260px; max-width: 85vw; max-height: 100vh;
+    background: rgba(30,30,30,.92); color: #ddd; font-size: 12px;
+    border-left: 1px solid #444; overflow-y: auto; }
+  #panel h4 { margin: 0; padding: 6px 8px; border-bottom: 1px solid #444; font-weight: normal; color: #aaa; }
+  #rbar { padding: 6px 8px; border-bottom: 1px solid #3a3a3a; }
+  #rbar button { background: #3a3a3a; color: #eee; border: 1px solid #555; border-radius: 4px;
+    padding: 4px 8px; cursor: pointer; font-size: 12px; }
+  #rbar button.active { background: #3f6b3f; border-color: #6c6; }
+  #gbar { display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+    border-bottom: 1px solid #3a3a3a; color: #ccc; }
+  #gbar input[type=range] { flex: 1; }
+  #gbar .gval { width: 34px; text-align: right; color: #aaa; }
+  .shell { border-bottom: 1px solid #3a3a3a; padding: 6px 8px; }
+  .shell-head { display: flex; align-items: center; gap: 6px; }
+  .shell-head .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shell-head input[type=color] { width: 26px; height: 22px; padding: 0; border: none; background: none; }
+  .shell-head .vis { cursor: pointer; }
+  .shell-body { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+  .shell-body label { color: #999; white-space: nowrap; width: 52px; }
+  .shell-body input[type=range] { flex: 1; }
+  .shell-body .val { width: 34px; text-align: right; color: #aaa; }
+  #errBanner { position: fixed; left: 10px; bottom: 10px; max-width: 70vw;
+    background: #a33; color: #fff; padding: 8px 12px; border-radius: 6px;
+    font: 12px monospace; display: none; white-space: pre-wrap; z-index: 10; }
+</style>
+</head>
+<body>
+<div id="badge"></div>
+<div id="errBanner"></div>
+<div id="panel">
+  <h4></h4>
+  <div id="rbar"><button id="btnFree">✥ <span class="fr"></span></button></div>
+  <div id="gbar"><span class="gl"></span><input type="range" id="bright" min="0" max="1" step="0.01"><span class="gval" id="bval"></span></div>
+  <div id="list"></div>
+</div>
+<script src="https://unpkg.com/three@0.128.0/build/three.min.js"><\/script>
+<script>if(!window.THREE)document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"><\\/script>');<\/script>
+<script>if(!window.THREE)document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"><\\/script>');<\/script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"><\/script>
+<script>if(!(window.THREE&&THREE.OrbitControls))document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"><\\/script>');<\/script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/loaders/GLTFLoader.js"><\/script>
+<script>if(!(window.THREE&&THREE.GLTFLoader))document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"><\\/script>');<\/script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/loaders/OBJLoader.js"><\/script>
+<script>if(!(window.THREE&&THREE.OBJLoader))document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"><\\/script>');<\/script>
+<script src="https://unpkg.com/three@0.128.0/examples/js/loaders/MTLLoader.js"><\/script>
+<script>if(!(window.THREE&&THREE.MTLLoader))document.write('<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/MTLLoader.js"><\\/script>');<\/script>
+<script type="application/json" id="snapshot">${data}<\/script>
+<script>
+(function () {
+  function shw(m) {
+    var d = document.getElementById("errBanner");
+    d.style.display = "block";
+    d.textContent += m + "\\n";
+  }
+  window.addEventListener("error", function (e) { shw("Error: " + (e.message || e)); });
+
+  function go() {
+    try {
+      var S = JSON.parse(document.getElementById("snapshot").textContent);
+      var M = {
+        title: ["Оболочки", "Shells"],
+        savedAt: ["Сохранено: ", "Saved: "],
+        hint: ["Вращение — палец/мышь. «Свободно» — крутится сама модель без ограничений.",
+               "Rotate — finger/mouse. 'Free' — the model itself spins without limits."],
+        loadError: ["Ошибка загрузки", "Load error"],
+        shell: ["Оболочка", "Shell"],
+        visibility: ["Показать/скрыть", "Show/hide"],
+        opacity: ["Прозр.", "Alpha"],
+        gloss: ["Глянец", "Gloss"],
+        light: ["Свет", "Light"],
+        free: ["Свободно", "Free"],
+        noPolys: ["В файле нет полигонов", "No polygons in file"]
+      };
+      var L = S.lang === "en" ? 1 : 0;
+      function t(k) { return M[k][L]; }
+      document.title = S.title || "3D Model";
+      document.getElementById("badge").textContent =
+        (S.title || "3D Model") + "\\n" + t("savedAt") + S.date + "\\n" + t("hint");
+      document.querySelector("#panel h4").textContent = t("title");
+      document.querySelector("#gbar .gl").textContent = t("light");
+      document.querySelector("#rbar .fr").textContent = t("free");
+
+      var scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x222222);
+      var hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 2);
+      scene.add(hemiLight);
+      var dl = new THREE.DirectionalLight(0xffffff, 2.5);
+      dl.position.set(5, 10, 7);
+      scene.add(dl);
+      var grid = new THREE.GridHelper(20, 40, 0x555555, 0x333333);
+      grid.visible = S.gridVisible !== false;
+      scene.add(grid);
+
+      function applyBrightness(v) {
+        hemiLight.intensity = 0.15 + v * 3.0;
+        dl.intensity = 0.1 + v * 4.0;
+      }
+      var brightness = (typeof S.brightness === "number") ? S.brightness : 0.6;
+      applyBrightness(brightness);
+      var bEl = document.getElementById("bright");
+      bEl.value = brightness;
+      document.getElementById("bval").textContent = Math.round(brightness * 100) + "%";
+      bEl.oninput = function () {
+        var v = parseFloat(bEl.value);
+        applyBrightness(v);
+        document.getElementById("bval").textContent = Math.round(v * 100) + "%";
+      };
+
+      var FOV = S.fov || 50;
+      var camera;
+      if (S.isOrtho && S.ortho) {
+        camera = new THREE.OrthographicCamera(S.ortho.left, S.ortho.right, S.ortho.top, S.ortho.bottom, 0.01, 10000);
+      } else {
+        camera = new THREE.PerspectiveCamera(FOV, innerWidth / innerHeight, 0.01, 5000);
+      }
+      camera.position.fromArray(S.camPos);
+      camera.zoom = S.zoom || 1;
+      camera.lookAt(new THREE.Vector3().fromArray(S.target));
+      camera.updateProjectionMatrix();
+
+      var renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(innerWidth, innerHeight);
+      renderer.setPixelRatio(window.devicePixelRatio || 1);
+      document.body.appendChild(renderer.domElement);
+
+      var controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.target.fromArray(S.target);
+      controls.update();
+
+      var freeRot = (S.freeRot === true);
+      var dragging = false, lastX = 0, lastY = 0;
+      var modelCenter = new THREE.Vector3();
+      var curObj = null;
+      var btnFree = document.getElementById("btnFree");
+      btnFree.classList.toggle("active", freeRot);
+      if (freeRot) controls.enableRotate = false;
+      btnFree.onclick = function () {
+        freeRot = !freeRot;
+        controls.enableRotate = !freeRot;
+        btnFree.classList.toggle("active", freeRot);
+      };
+      function rotateObject(dx, dy) {
+        if (!curObj) return;
+        var speed = 0.008;
+        var right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+        var up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+        var qy = new THREE.Quaternion().setFromAxisAngle(right, dy * speed);
+        var qx = new THREE.Quaternion().setFromAxisAngle(up, dx * speed);
+        var q = new THREE.Quaternion().multiplyQuaternions(qy, qx);
+        curObj.position.sub(modelCenter).applyQuaternion(q).add(modelCenter);
+        curObj.quaternion.premultiply(q);
+      }
+      renderer.domElement.addEventListener("pointerdown", function (e) {
+        if (!freeRot || !curObj || e.button !== 0) return;
+        dragging = true; lastX = e.clientX; lastY = e.clientY;
+      });
+      window.addEventListener("pointermove", function (e) {
+        if (!dragging) return;
+        var dx = e.clientX - lastX, dy = e.clientY - lastY;
+        lastX = e.clientX; lastY = e.clientY;
+        rotateObject(dx, dy);
+      });
+      window.addEventListener("pointerup", function () { dragging = false; });
+
+      addEventListener("resize", function () {
+        if (camera.isOrthographicCamera) {
+          var halfH = (camera.top - camera.bottom) / 2;
+          var aspect = innerWidth / innerHeight;
+          camera.left = -halfH * aspect; camera.right = halfH * aspect;
+        } else {
+          camera.aspect = innerWidth / innerHeight;
+        }
+        camera.updateProjectionMatrix();
+        renderer.setSize(innerWidth, innerHeight);
+      });
+
+      function getGloss(m) {
+        if (!m) return 0.5;
+        if (m.roughness !== undefined) return 1 - m.roughness;
+        if (m.shininess !== undefined) return Math.min(1, (m.shininess || 30) / 128);
+        return 0.5;
+      }
+      function applyGloss(mesh, v) {
+        var mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        var out = mats.map(function (m) {
+          if (!m) return m;
+          if (m.isMeshStandardMaterial) { m.roughness = 1 - v; m.needsUpdate = true; return m; }
+          if (m.isMeshPhongMaterial) {
+            m.shininess = 1 + v * 127;
+            if (m.specular) m.specular.setScalar(v * 0.9);
+            m.needsUpdate = true;
+            return m;
+          }
+          var ph = new THREE.MeshPhongMaterial({
+            color: m.color ? m.color.clone() : new THREE.Color(0xcccccc),
+            map: m.map || null, transparent: m.transparent, opacity: m.opacity,
+            side: (m.side !== undefined) ? m.side : THREE.FrontSide
+          });
+          ph.shininess = 1 + v * 127;
+          ph.specular.setScalar(v * 0.9);
+          return ph;
+        });
+        mesh.material = Array.isArray(mesh.material) ? out : out[0];
+      }
+
+      var MAX_TRIANGLES = 2000000;
+
+      function unionComponents(geo) {
+        var pos = geo.attributes.position;
+        if (!pos) return null;
+        var index = geo.index;
+        var triCount = index ? Math.floor(index.count / 3) : Math.floor(pos.count / 3);
+        if (triCount < 2) return null;
+
+        var vid = null, nv;
+        if (index) {
+          nv = pos.count;
+        } else {
+          var map = new Map();
+          vid = new Int32Array(pos.count);
+          for (var i = 0; i < pos.count; i++) {
+            var key = pos.getX(i).toFixed(5) + "," + pos.getY(i).toFixed(5) + "," + pos.getZ(i).toFixed(5);
+            var id = map.get(key);
+            if (id === undefined) { id = map.size; map.set(key, id); }
+            vid[i] = id;
+          }
+          nv = map.size;
+        }
+
+        var parent = new Int32Array(nv);
+        for (var s = 0; s < nv; s++) parent[s] = s;
+        function find(x) {
+          while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+          return x;
+        }
+        function vi(i) { return index ? index.array[i] : vid[i]; }
+
+        for (var t = 0; t < triCount; t++) {
+          var a = find(vi(t * 3));
+          var b = find(vi(t * 3 + 1));
+          var c = find(vi(t * 3 + 2));
+          if (a !== b) parent[a] = b;
+          if (a !== c) parent[a] = c;
+        }
+
+        var groups = new Map();
+        for (var t2 = 0; t2 < triCount; t2++) {
+          var r = find(vi(t2 * 3));
+          var arr = groups.get(r);
+          if (!arr) { arr = []; groups.set(r, arr); }
+          arr.push(t2);
+        }
+        if (groups.size < 2) return null;
+        return Array.from(groups.values());
+      }
+
+      function splitByMaterialGroups(mesh) {
+        var geo = mesh.geometry;
+        var mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        if (!geo || !geo.groups || geo.groups.length < 2 || mats.length < 2) return;
+        var parent = mesh.parent;
+        if (!parent) return;
+        var created = [];
+        geo.groups.forEach(function (g) {
+          var mi = (g.materialIndex !== undefined) ? g.materialIndex : 0;
+          var m = mats[mi];
+          if (!m || g.count === 0) return;
+          var sub = new THREE.BufferGeometry();
+          if (geo.index) {
+            for (var an in geo.attributes) sub.setAttribute(an, geo.attributes[an]);
+            var idx = geo.index.array.slice(g.start, g.start + g.count);
+            sub.setIndex(new THREE.BufferAttribute(idx, 1));
+          } else {
+            for (var an2 in geo.attributes) {
+              var a = geo.attributes[an2];
+              sub.setAttribute(an2, new THREE.BufferAttribute(
+                a.array.slice(g.start * a.itemSize, (g.start + g.count) * a.itemSize), a.itemSize));
+            }
+          }
+          var nm = new THREE.Mesh(sub, m.clone());
+          nm.position.copy(mesh.position);
+          nm.rotation.copy(mesh.rotation);
+          nm.scale.copy(mesh.scale);
+          nm.name = (mesh.name && mesh.name.trim()) ? mesh.name + "_" + (created.length + 1) : "";
+          created.push(nm);
+        });
+        if (created.length > 1) {
+          created.forEach(function (c) { parent.add(c); });
+          parent.remove(mesh);
+        }
+      }
+
+      function splitByIslands(mesh) {
+        var geo = mesh.geometry;
+        if (!geo || !geo.attributes.position) return;
+        var index = geo.index;
+        var triCount = index ? Math.floor(index.count / 3)
+                             : Math.floor(geo.attributes.position.count / 3);
+        if (triCount < 2 || triCount > MAX_TRIANGLES) return;
+        var comps = unionComponents(geo);
+        if (!comps || comps.length < 2) return;
+        var parent = mesh.parent;
+        if (!parent) return;
+        var created = [];
+        comps.forEach(function (tris, k) {
+          var sub = new THREE.BufferGeometry();
+          for (var an in geo.attributes) sub.setAttribute(an, geo.attributes[an]);
+          var idx = new Uint32Array(tris.length * 3);
+          for (var i = 0; i < tris.length; i++) {
+            for (var j = 0; j < 3; j++) {
+              idx[i * 3 + j] = index ? index.array[tris[i] * 3 + j] : tris[i] * 3 + j;
+            }
+          }
+          sub.setIndex(new THREE.BufferAttribute(idx, 1));
+          var mats = Array.isArray(mesh.material)
+            ? mesh.material.map(function (m) { return m ? m.clone() : new THREE.MeshPhongMaterial(); })
+            : mesh.material.clone();
+          var nm = new THREE.Mesh(sub, mats);
+          nm.position.copy(mesh.position);
+          nm.rotation.copy(mesh.rotation);
+          nm.scale.copy(mesh.scale);
+          nm.name = (mesh.name && mesh.name.trim()) ? mesh.name + "_" + (k + 1) : "";
+          created.push(nm);
+        });
+        created.forEach(function (c) { parent.add(c); });
+        parent.remove(mesh);
+      }
+
+      function splitAllMaterial(root) {
+        var meshes = [];
+        root.traverse(function (o) { if (o.isMesh) meshes.push(o); });
+        meshes.forEach(splitByMaterialGroups);
+      }
+      function splitAllIslands(root) {
+        var meshes = [];
+        root.traverse(function (o) { if (o.isMesh) meshes.push(o); });
+        meshes.forEach(splitByIslands);
+      }
+
+      function applySnapshot(obj) {
+        var i = 0;
+        obj.traverse(function (o) {
+          if (!o.isMesh) return;
+          var s = S.meshes[i]; i++;
+          if (!s) return;
+          o.visible = s.visible !== false;
+          var mats = Array.isArray(o.material) ? o.material : [o.material];
+          mats.forEach(function (m) {
+            if (!m) return;
+            if (s.cTouched) { m.color.set(s.color || "#cccccc"); m.map = null; }
+            if (s.oTouched) {
+              m.opacity = (typeof s.opacity === "number") ? s.opacity : 1;
+              m.transparent = m.opacity < 1;
+              m.depthWrite = m.opacity >= 1;
+            }
+            m.needsUpdate = true;
+          });
+          if (s.gTouched) applyGloss(o, (typeof s.gloss === "number") ? s.gloss : 0.5);
+        });
+      }
+
+      function addRow(mesh, name) {
+        var mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        var m0 = mats[0];
+        var startColor = "#" + (m0 && m0.color ? m0.color.getHexString() : "cccccc");
+        var startOpacity = (m0 && m0.transparent) ? m0.opacity : 1;
+        var startGloss = getGloss(m0);
+        var row = document.createElement("div");
+        row.className = "shell";
+        row.innerHTML =
+          '<div class="shell-head">' +
+            '<span class="vis" title="' + t("visibility") + '">👁</span>' +
+            '<span class="name" title="' + name + '">' + name + '</span>' +
+            '<input type="color" value="' + startColor + '">' +
+          '</div>' +
+          '<div class="shell-body">' +
+            '<label>' + t("opacity") + '</label>' +
+            '<input type="range" min="0" max="1" step="0.01" value="' + startOpacity + '">' +
+            '<span class="val">' + Math.round(startOpacity * 100) + '%</span>' +
+          '</div>' +
+          '<div class="shell-body">' +
+            '<label>' + t("gloss") + '</label>' +
+            '<input type="range" min="0" max="1" step="0.01" value="' + startGloss + '">' +
+            '<span class="val">' + Math.round(startGloss * 100) + '%</span>' +
+          '</div>';
+        var visEl = row.querySelector(".vis");
+        var colorEl = row.querySelector("input[type=color]");
+        var sliders = row.querySelectorAll("input[type=range]");
+        var vals = row.querySelectorAll(".val");
+        visEl.onclick = function () {
+          mesh.visible = !mesh.visible;
+          visEl.style.opacity = mesh.visible ? 1 : .35;
+        };
+        colorEl.oninput = function () {
+          mats.forEach(function (m) { m.color.set(colorEl.value); m.map = null; m.needsUpdate = true; });
+        };
+        sliders[0].oninput = function () {
+          var v = parseFloat(sliders[0].value);
+          vals[0].textContent = Math.round(v * 100) + "%";
+          mats.forEach(function (m) {
+            m.opacity = v; m.transparent = v < 1;
+            m.depthWrite = v >= 1; m.needsUpdate = true;
+          });
+        };
+        sliders[1].oninput = function () {
+          var v = parseFloat(sliders[1].value);
+          vals[1].textContent = Math.round(v * 100) + "%";
+          applyGloss(mesh, v);
+        };
+        document.getElementById("list").appendChild(row);
+      }
+      function buildPanel(root) {
+        var list = document.getElementById("list");
+        list.innerHTML = "";
+        var n = 0;
+        root.traverse(function (o) {
+          if (!o.isMesh) return;
+          n++;
+          addRow(o, (o.name && o.name.trim()) ? o.name : t("shell") + " " + n);
+        });
+        if (!n) list.innerHTML = '<div style="color:#888;text-align:center;padding:12px 4px">' + t("noPolys") + '</div>';
+      }
+
+      var files = S.files || {};
+      var gltfName = null, objName = null, mtlName = null;
+      Object.keys(files).forEach(function (n) {
+        var low = n.toLowerCase();
+        if (!gltfName && /\\.(glb|gltf)$/.test(low)) gltfName = n;
+        if (!objName && /\\.obj$/.test(low)) objName = n;
+        if (!mtlName && /\\.mtl$/.test(low)) mtlName = n;
+      });
+      function basename(u) { return decodeURIComponent(String(u).split("?")[0].split("/").pop()); }
+      function fail(e) { alert(t("loadError") + ": " + (e && e.message ? e.message : e)); }
+
+      var proceed = function (object) {
+        splitAllMaterial(object);
+        if (S.isSplit) splitAllIslands(object);
+        applySnapshot(object);
+        if (S.objQuat) object.quaternion.fromArray(S.objQuat);
+        if (S.objPos) object.position.fromArray(S.objPos);
+        var box = new THREE.Box3().setFromObject(object);
+        if (!box.isEmpty()) modelCenter.copy(box.getCenter(new THREE.Vector3()));
+        curObj = object;
+        scene.add(object);
+        buildPanel(object);
+      };
+
+      if (gltfName) {
+        new THREE.GLTFLoader().load(files[gltfName], function (g) { proceed(g.scene); }, undefined, fail);
+      } else if (objName) {
+        var manager = new THREE.LoadingManager();
+        manager.setURLModifier(function (u) { var n = basename(u); return files[n] || u; });
+        var loader = new THREE.OBJLoader(manager);
+        var start = function () {
+          loader.load(files[objName], proceed, undefined, fail);
+        };
+        if (mtlName) {
+          new THREE.MTLLoader(manager).load(files[mtlName],
+            function (mats) { mats.preload(); loader.setMaterials(mats); start(); },
+            undefined, function () { start(); });
+        } else { start(); }
+      }
+
+      renderer.setAnimationLoop(function () { controls.update(); renderer.render(scene, camera); });
+    } catch (e) {
+      shw("Init error: " + e.message);
+    }
+  }
+
+  function libOk() { return !!(window.THREE && THREE.OrbitControls); }
+  if (libOk()) {
+    go();
+  } else {
+    shw("Ждём библиотеку three.js…");
+    var n = 0;
+    var iv = setInterval(function () {
+      n++;
+      if (libOk()) {
+        clearInterval(iv);
+        var b = document.getElementById("errBanner");
+        b.textContent = ""; b.style.display = "none";
+        go();
+      } else if (n >= 120) {
+        clearInterval(iv);
+        shw("Библиотека three.js не загрузилась. Проверьте интернет.");
+      }
+    }, 500);
+  }
+})();
+<\/script>
+</body>
+</html>`;
+}
+
+function doSave() {
+  if (!current) { alert(t('needModel')); return; }
+
+  var typed = prompt(t('saveAs'), defaultSaveName());
+  if (typed === null) return;
+  var fname = (typed.trim() || defaultSaveName());
+  if (!/\.html?$/i.test(fname)) fname += '.html';
+
+  var jobs = loadedFiles.map(function (f) { return fileToDataURL(f).then(function (d) { return [f.name, d]; }); });
+  Promise.all(jobs).then(function (pairs) {
+    var files = {};
+    pairs.forEach(function (p) { files[p[0]] = p[1]; });
+    var meshes = [];
+    current.traverse(function (o) {
+      if (!o.isMesh) return;
+      var mats = Array.isArray(o.material) ? o.material : [o.material];
+      var m0 = mats[0];
+      meshes.push({
+        visible: o.visible,
+        color: '#' + (m0 && m0.color ? m0.color.getHexString() : 'cccccc'),
+        opacity: (m0 && m0.transparent) ? m0.opacity : 1,
+        gloss: getGloss(m0),
+        cTouched: !!o.userData.cTouched,
+        oTouched: !!o.userData.oTouched,
+        gTouched: !!o.userData.gTouched
+      });
+    });
+    var snap = {
+      title: fname.replace(/\.html?$/i, ''),
+      lang: lang,
+      brightness: brightness,
+      freeRot: freeRot,
+      isSplit: islandSplit,
+      objQuat: current.quaternion.toArray(),
+      objPos: current.position.toArray(),
+      gridVisible: grid.visible,
+      isOrtho: isOrtho, fov: FOV, zoom: camera.zoom || 1,
+      camPos: camera.position.toArray(),
+      target: controls.target.toArray(),
+      ortho: isOrtho ? { left: camera.left, right: camera.right, top: camera.top, bottom: camera.bottom } : null,
+      date: new Date().toLocaleString(lang === 'ru' ? 'ru-RU' : 'en-US'),
+      meshes: meshes, files: files
+    };
+    var blob = new Blob([buildStandaloneHTML(snap)], { type: 'text/html' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 5000);
+    var saveSpan = document.querySelector('#btnSave span[data-i18n]');
+    if (saveSpan) {
+      saveSpan.textContent = t('saved');
+      setTimeout(function () { saveSpan.textContent = t('save'); }, 1500);
+    }
+  }).catch(function (e) { alert(t('loadError') + ': ' + (e && e.message ? e.message : e)); });
+}
+
+// ---------- Ресайз ----------
+function onResize() {
+  if (!ready) return;
+  if (isOrtho) {
+    var dist = camera.position.distanceTo(controls.target);
+    var halfH = Math.tan(THREE.MathUtils.degToRad(FOV / 2)) * dist;
+    camera.left = -halfH * (innerWidth / innerHeight);
+    camera.right = halfH * (innerWidth / innerHeight);
+    camera.top = halfH; camera.bottom = -halfH;
+  } else {
+    camera.aspect = innerWidth / innerHeight;
+  }
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+}
+
+// ---------- Инициализация сцены (когда библиотека на месте) ----------
+function init() {
+  if (ready || !libReady()) return;
+  try {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x222222);
+    hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 2);
+    scene.add(hemiLight);
+    dirLight = new THREE.DirectionalLight(0xffffff, 2.5);
+    dirLight.position.set(5, 10, 7);
+    scene.add(dirLight);
+    grid = new THREE.GridHelper(20, 40, 0x555555, 0x333333);
+    scene.add(grid);
+    applyBrightness(brightness);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio || 1);
+    document.body.appendChild(renderer.domElement);
+    renderer.domElement.addEventListener('dblclick', function () { input.click(); });
+
+    modelCenter = new THREE.Vector3();
+
+    camera = new THREE.PerspectiveCamera(FOV, innerWidth / innerHeight, 0.01, 5000);
+    camera.position.set(3, 2, 5);
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.target.set(0, 0, 0);
+    if (freeRot) controls.enableRotate = false;
+
+    renderer.domElement.addEventListener('pointerdown', function (e) {
+      if (!freeRot || !current || e.button !== 0) return;
+      dragging = true; lastX = e.clientX; lastY = e.clientY;
+    });
+
+    ready = true;
+    libMsg = '';
+    elBanner.textContent = '';
+    elBanner.style.display = 'none';
+    applyLang();
+    renderer.setAnimationLoop(function () { controls.update(); renderer.render(scene, camera); });
+  } catch (e) {
+    show('Init: ' + e.message);
+    libMsg = 'Ошибка инициализации 3D: ' + e.message;
+  }
+}
+
+applyLang();
+
+// ---------- Запуск: мгновенно, если библиотека уже есть; иначе поллинг ----------
+if (libReady()) {
+  init();
+} else {
+  show(t('libWait'));
+  var n = 0;
+  var iv = setInterval(function () {
+    n++;
+    if (libReady()) {
+      clearInterval(iv);
+      elBanner.textContent = '';
+      elBanner.style.display = 'none';
+      init();
+    } else if (n >= 120) {
+      clearInterval(iv);
+      show(t('libFail'));
+    }
+  }, 500);
+}
+})();
+</script>
+</body>
+</html>
